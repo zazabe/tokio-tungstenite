@@ -271,6 +271,36 @@ impl<S> WebSocketStream<S> {
         let msg = msg.map(|msg| msg.into_owned());
         self.send(Message::Close(msg)).await
     }
+
+
+    /// Poll-read all messages from a single read syscall.
+    pub fn poll_read_messages(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option< Result<Vec<Message>, WsError>>> where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        trace!("{}:{} Stream.poll_many_next", file!(), line!());
+
+        // The connection has been closed or a critical error has occurred.
+        // We have already returned the error to the user, the `Stream` is unusable,
+        // so we assume that the stream has been "fused".
+        if self.ended {
+            return Poll::Ready(None);
+        }
+
+        match futures_util::ready!(self.with_context(Some((ContextWaker::Read, cx)), |s| {
+            trace!("{}:{} Stream.with_context poll_next -> read_messages()", file!(), line!());
+            cvt(s.read_messages())
+        })) {
+            Ok(v) => Poll::Ready(Some(Ok(v))),
+            Err(e) => {
+                self.ended = true;
+                if matches!(e, WsError::AlreadyClosed | WsError::ConnectionClosed) {
+                    Poll::Ready(None)
+                } else {
+                    Poll::Ready(Some(Err(e)))
+                }
+            }
+        }
+    }
 }
 
 impl<T> Stream for WebSocketStream<T>
